@@ -38,7 +38,7 @@ CUDAMETHOD ?= $(if $(ENABLE_CUDNN),nvcc,mex)
 
 # Maintenance
 NAME = matconvnet
-VER = 1.0-beta20
+VER = 1.0-beta23
 DIST = $(NAME)-$(VER)
 LATEST = $(NAME)-latest
 RSYNC = rsync
@@ -78,10 +78,11 @@ $(if $(ENABLE_DOUBLE),-DENABLE_DOUBLE,) \
 $(if $(VERB),-v,)
 CXXFLAGS_PASS =
 CXXOPTIMFLAGS =
-LDFLAGS = -lmwblas
+LDFLAGS =
 LDOPTIMFLAGS =
+LINKLIBS = -lmwblas
 
-NVCCFLAGS_PASS = -gencode=arch=compute_30,code=\"sm_30,compute_30\"
+NVCCFLAGS_PASS = -D_FORCE_INLINES -gencode=arch=compute_30,code=\"sm_30,compute_30\"
 NVCCVER = $(shell $(NVCC) --version | \
 sed -n 's/.*V\([0-9]*\).\([0-9]*\).\([0-9]*\).*/\1 \2 \3/p' | \
 xargs printf '%02d%02d%02d')
@@ -96,7 +97,8 @@ LDFLAGS += \
 -mmacosx-version-min=10.9 \
 $(if $(ENABLE_GPU),-Wl$(comma)-rpath -Wl$(comma)"$(CUDAROOT)/lib") \
 $(if $(ENABLE_CUDNN),-Wl$(comma)-rpath -Wl$(comma)"$(CUDNNROOT)/lib") \
-$(if $(NVCCVER_LT_70),-stdlib=libstdc++) \
+$(if $(NVCCVER_LT_70),-stdlib=libstdc++)
+LINKLIBS += \
 $(if $(ENABLE_GPU),-L"$(CUDAROOT)/lib" -lmwgpu -lcudart -lcublas) \
 $(if $(ENABLE_CUDNN),-L"$(CUDNNROOT)/lib" -lcudnn)
 endif
@@ -107,17 +109,19 @@ IMAGELIB ?= $(if $(ENABLE_IMREADJPEG),libjpeg,none)
 CXXOPTIMFLAGS += -mssse3 -ftree-vect-loop-version -ffast-math -funroll-all-loops
 LDFLAGS += \
 $(if $(ENABLE_GPU),-Wl$(comma)-rpath -Wl$(comma)"$(CUDAROOT)/lib64") \
-$(if $(ENABLE_CUDNN),-Wl$(comma)-rpath -Wl$(comma)"$(CUDNNROOT)/lib64") \
+$(if $(ENABLE_CUDNN),-Wl$(comma)-rpath -Wl$(comma)"$(CUDNNROOT)/lib64")
+LINKLIBS += \
+-lrt \
 $(if $(ENABLE_GPU),-L"$(CUDAROOT)/lib64" -lmwgpu -lcudart -lcublas) \
 $(if $(ENABLE_CUDNN),-L"$(CUDNNROOT)/lib64" -lcudnn)
 endif
 
 # Image library
 ifeq ($(IMAGELIB),libjpeg)
-LDFLAGS += -ljpeg
+LINKLIBS += -ljpeg
 endif
 ifeq ($(IMAGELIB),quartz)
-LDFLAGS += -framework Cocoa -framework ImageIO
+LINKLIBS += -framework Cocoa -framework ImageIO
 endif
 
 MEXFLAGS = $(CXXFLAGS) -largeArrayDims
@@ -155,14 +159,19 @@ cpp_src+=matlab/src/bits/nnpooling.$(ext)
 cpp_src+=matlab/src/bits/nnnormalize.$(ext)
 cpp_src+=matlab/src/bits/nnbnorm.$(ext)
 cpp_src+=matlab/src/bits/nnbilinearsampler.$(ext)
+cpp_src+=matlab/src/bits/nnroipooling.$(ext)
 mex_src+=matlab/src/vl_nnconv.$(ext)
 mex_src+=matlab/src/vl_nnconvt.$(ext)
 mex_src+=matlab/src/vl_nnpool.$(ext)
 mex_src+=matlab/src/vl_nnnormalize.$(ext)
 mex_src+=matlab/src/vl_nnbnorm.$(ext)
 mex_src+=matlab/src/vl_nnbilinearsampler.$(ext)
+mex_src+=matlab/src/vl_nnroipool.$(ext)
+mex_src+=matlab/src/vl_taccummex.$(ext)
+mex_src+=matlab/src/vl_tmove.$(ext)
 ifdef ENABLE_IMREADJPEG
-mex_src+=matlab/src/vl_imreadjpeg.cpp
+mex_src+=matlab/src/vl_imreadjpeg.$(ext)
+mex_src+=matlab/src/vl_imreadjpeg_old.$(ext)
 endif
 
 # CPU-specific files
@@ -173,6 +182,7 @@ cpp_src+=matlab/src/bits/impl/pooling_cpu.cpp
 cpp_src+=matlab/src/bits/impl/normalize_cpu.cpp
 cpp_src+=matlab/src/bits/impl/bnorm_cpu.cpp
 cpp_src+=matlab/src/bits/impl/bilinearsampler_cpu.cpp
+cpp_src+=matlab/src/bits/impl/roipooling_cpu.cpp
 cpp_src+=matlab/src/bits/impl/tinythread.cpp
 ifdef ENABLE_IMREADJPEG
 cpp_src+=matlab/src/bits/impl/imread_$(IMAGELIB).cpp
@@ -188,12 +198,15 @@ cpp_src+=matlab/src/bits/impl/pooling_gpu.cu
 cpp_src+=matlab/src/bits/impl/normalize_gpu.cu
 cpp_src+=matlab/src/bits/impl/bnorm_gpu.cu
 cpp_src+=matlab/src/bits/impl/bilinearsampler_gpu.cu
+cpp_src+=matlab/src/bits/impl/roipooling_gpu.cu
 cpp_src+=matlab/src/bits/datacu.cu
+mex_src+=matlab/src/vl_cudatool.cu
 ifdef ENABLE_CUDNN
 cpp_src+=matlab/src/bits/impl/nnconv_cudnn.cu
 cpp_src+=matlab/src/bits/impl/nnpooling_cudnn.cu
 cpp_src+=matlab/src/bits/impl/nnbias_cudnn.cu
 cpp_src+=matlab/src/bits/impl/nnbilinearsampler_cudnn.cu
+cpp_src+=matlab/src/bits/impl/nnbnorm_cudnn.cu
 endif
 endif
 
@@ -240,12 +253,13 @@ CXXOPTIMFLAGS='$$CXXOPTIMFLAGS $(CXXOPTIMFLAGS)'
 MEXFLAGS_CC_GPU := \
 -f "$(MEXOPTS)" \
 $(MEXFLAGS) \
-CXXFLAGS='$$CXXFLAGS $(NVCCFLAGS_PASS) -Xcompiler $(call nvcc-quote,$(CXXFLAGS_PASS))' \
-CXXOPTIMFLAGS='$$CXXOPTIMFLAGS -Xcompiler $(call nvcc-quote,$(CXXOPTIMFLAGS))'
+CXXFLAGS='$$CXXFLAGS $(NVCCFLAGS_PASS) $(call nvcc-quote,$(CXXFLAGS_PASS))' \
+CXXOPTIMFLAGS='$$CXXOPTIMFLAGS $(call nvcc-quote,$(CXXOPTIMFLAGS))'
 
 MEXFLAGS_LD := $(MEXFLAGS) \
 LDFLAGS='$$LDFLAGS $(LDFLAGS)' \
-LDOPTIMFLAGS='$$LDOPTIMFLAGS $(LDOPTIMFLAGS)'
+LDOPTIMFLAGS='$$LDOPTIMFLAGS $(LDOPTIMFLAGS)' \
+LINKLIBS='$(LINKLIBS) $$LINKLIBS' \
 
 NVCCFLAGS = $(CXXFLAGS) $(NVCCFLAGS_PASS) \
 -I"$(MATLABROOT)/extern/include" \
@@ -263,6 +277,10 @@ matlab/mex/.build/%.o : matlab/src/%.cu matlab/mex/.build/.stamp
 	$(NVCC) $(NVCCFLAGS) "$(<)" -c -o "$(@)" $(nvcc_filter)
 endif
 endif
+
+matlab/mex/.build/%.o : matlab/src/%.cpp matlab/src/%.cu matlab/mex/.build/.stamp
+	$(MEX) -c $(MEXFLAGS_CC_CPU) "$(<)"
+	mv -f "$(notdir $(@))" "$(@)"
 
 matlab/mex/.build/%.o : matlab/src/%.cpp matlab/mex/.build/.stamp
 	$(MEX) -c $(MEXFLAGS_CC_CPU) "$(<)"
@@ -293,6 +311,7 @@ info: doc-info
 	@echo 'CXXOPTIMFLAGS=$(CXXOPTIMFLAGS)'
 	@echo 'LDFLAGS=$(LDFLAGS)'
 	@echo 'LDOPTIMFLAGS=$(LDOPTIMFLAGS)'
+	@echo 'LINKLIBS=$(LINKLIBS)'
 	@echo '------------------------------'
 	@echo 'MEXARCH=$(MEXARCH)'
 	@echo 'MEXFLAGS=$(MEXFLAGS)'
